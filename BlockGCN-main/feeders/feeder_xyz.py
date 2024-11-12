@@ -60,27 +60,5 @@ class Feeder(Dataset):
         hit_top_k = [l in rank[i, -top_k:] for i, l in enumerate(self.label)]
         return sum(hit_top_k) * 1.0 / len(hit_top_k)
     
-# if __name__ == "__main__":
-#     # Debug
-#     train_loader = torch.utils.data.DataLoader(
-#                 dataset = Feeder(data_path = '/data-home/liujinfu/MotionBERT/pose_data/V1.npz', data_split = 'train'),
-#                 batch_size = 4,
-#                 shuffle = True,
-#                 num_workers = 2,
-#                 drop_last = False)
-    
-#     val_loader = torch.utils.data.DataLoader(
-#             dataset = Feeder(data_path = '/data-home/liujinfu/MotionBERT/pose_data/V1.npz', data_split = 'test'),
-#             batch_size = 4,
-#             shuffle = False,
-#             num_workers = 2,
-#             drop_last = False)
-    
-#     for batch_size, (data, label, idx) in enumerate(train_loader):
-#         data = data.float() # B C T V M
-#         label = label.long() # B 1
-#         print("pasue")
-    
-            
-        
+
     
