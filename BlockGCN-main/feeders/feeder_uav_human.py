@@ -1,46 +1,32 @@
-from .feeder_xyz import Feeder;
 import torch
 import numpy as np
-import torch.nn.functional as F
 from torch.utils.data import Dataset
-from . import tools;
+from .feeder_xyz import Feeder
+from . import tools
+from .bone_pairs import coco_pairs
 
-coco_pairs = [(1, 6), (2, 1), (3, 1), (4, 2), (5, 3), (6, 7), (7, 1), (8, 6), (9, 7), (10, 8), (11, 9),
-                (12, 6), (13, 7), (14, 12), (15, 13), (16, 14), (17, 15)]
 class FeederUAVHuman(Feeder):
-    #构造函数初始化
-    def __init__(self, 
-                 data_path, 
-                 label_path=None, 
-                 p_interval=1, 
-                 data_split='train', 
-                 random_choose=False, 
-                 random_shift=False,
-                 random_move=False, 
-                 random_rot=False, 
-                 window_size=-1, 
-                 normalization=False, 
-                 debug=False, 
-                 use_mmap=False,
-                 bone=False, 
-                 vel=False):
+    def __init__(self, data_path, label_path=None, p_interval=1, data_split='train', random_choose=False,
+                 random_shift=False, random_move=False, random_rot=False, window_size=-1, normalization=False,
+                 debug=False, use_mmap=False, bone=False, vel=False):
         """
-        :param data_path:
-        :param label_path:
-        :param split: training set or test set
-        :param random_choose: If true, randomly choose a portion of the input sequence
-        :param random_shift: If true, randomly pad zeros at the begining or end of sequence
-        :param random_move:
-        :param random_rot: rotate skeleton around xyz axis
-        :param window_size: The length of the output sequence
-        :param normalization: If true, normalize input sequence
-        :param debug: If true, only use the first 100 samples
-        :param use_mmap: If true, use mmap mode to load data, which can save the running memory
-        :param bone: use bone modality or not
-        :param vel: use motion modality or not
-        :param only_label: only load label for ensemble score compute
-        """
+        Initialize FeederUAVHuman object with various parameters.
 
+        :param data_path: Path to the input data
+        :param label_path: Path to the label data
+        :param p_interval: Interval for sampling data
+        :param data_split: 'train' or 'test'
+        :param random_choose: If True, randomly select a portion of the input sequence
+        :param random_shift: If True, apply random shift to the data
+        :param random_move: If True, apply random movements
+        :param random_rot: If True, apply random rotation to the skeleton data
+        :param window_size: The length of the output sequence
+        :param normalization: If True, normalize the input data
+        :param debug: If True, only load the first 100 samples for debugging
+        :param use_mmap: If True, use memory-mapped file loading
+        :param bone: Whether to use bone modality
+        :param vel: Whether to use velocity modality
+        """
         self.debug = debug
         self.data_path = data_path
         self.label_path = label_path
@@ -48,45 +34,34 @@ class FeederUAVHuman(Feeder):
         self.random_choose = random_choose
         self.random_shift = random_shift
         self.random_move = random_move
+        self.random_rot = random_rot
         self.window_size = window_size
         self.normalization = normalization
         self.use_mmap = use_mmap
         self.p_interval = p_interval
-        self.random_rot = random_rot
         self.bone = bone
         self.vel = vel
         self.load_data()
+
         if normalization:
-            self.get_mean_map()
+            self.compute_mean_std()
 
-   # 加载数据的方法
     def load_data(self):
+        data = np.load(self.data_path)
+        label = np.load(self.label_path)
 
-        # 两个都加载, 按照不同阶段返回东西就好
-        # data和label可以代表训练集的，也可以代表测试集的
-        data = np.load(self.data_path);
-        label = np.load(self.label_path);
+        data_type_name = 'test_' if self.data_split == 'test' else 'train_'
+        sample_limit = 100 if self.debug else len(data)
 
-        #TODO 重采样
+        self.data = data[:sample_limit]
+        self.label = label[:sample_limit]
+        self.sample_name = [f"{data_type_name}{i}" for i in range(sample_limit)]
 
-        # 这里sample_name需要一点判断，还是写上好了
-        data_type_name = 'test_' if self.data_split == 'test' else 'train_';
+    def compute_mean_std(self):
 
-        # 刚刚大概看了一下，还是按照一起加载的逻辑来写比较好(先暂时这样), 不然其他地方也要改
-        if not self.debug:
-            self.data = data;
-            self.label = label;
-            self.sample_name = [data_type_name + str(i) for i in range(len(self.data))];  #还是给一个sample_name吧
-        else:
-            self.data = data[0:100];
-            self.label = label[0:100];
-            self.sample_name = [data_type_name + str(i) for i in range(100)];
-
-    def get_mean_map(self):
-        data = self.data
-        N, C, T, V, M = data.shape
-        self.mean_map = data.mean(axis=2, keepdims=True).mean(axis=4, keepdims=True).mean(axis=0)
-        self.std_map = data.transpose((0, 2, 4, 1, 3)).reshape((N * T * M, C * V)).std(axis=0).reshape((C, 1, V, 1))
+        N, C, T, V, M = self.data.shape
+        self.mean_map = self.data.mean(axis=2, keepdims=True).mean(axis=4, keepdims=True).mean(axis=0)
+        self.std_map = self.data.transpose((0, 2, 4, 1, 3)).reshape((N * T * M, C * V)).std(axis=0).reshape((C, 1, V, 1))
 
     def __len__(self):
         return len(self.label)
@@ -95,50 +70,52 @@ class FeederUAVHuman(Feeder):
         return self
 
     def __getitem__(self, index):
-        data_numpy = self.data[index]
+        data_sample = self.data[index]
         label = self.label[index]
-        data_numpy = np.array(data_numpy)
-        valid_frame_num = np.sum(data_numpy.sum(0).sum(-1).sum(-1) != 0)       
-        if(valid_frame_num == 0):
-            return torch.from_numpy(np.zeros((3, 64, 17, 2))), torch.from_numpy(np.zeros((3, 64, 17, 2))), label, index;
-        # reshape Tx(MVC) to CTVM
-        data_numpy = tools.valid_crop_resize(data_numpy, valid_frame_num, self.p_interval, self.window_size)
-        center_index = 8;
-        joint = data_numpy
+        
+        valid_frame_num = np.sum(data_sample.sum(0).sum(-1).sum(-1) != 0)
+        
+        if valid_frame_num == 0:
+            zero_tensor = np.zeros((3, 64, 17, 2))
+            return torch.from_numpy(zero_tensor), torch.from_numpy(zero_tensor), label, index
+
+        data_sample = tools.valid_crop_resize(data_sample, valid_frame_num, self.p_interval, self.window_size)
+
         if self.random_rot:
-            data_numpy = tools.random_rot(data_numpy)
-            joint = data_numpy
+            data_sample = tools.random_rot(data_sample)
+
         if self.bone:
-            from .bone_pairs import coco_pairs
-            bone_data_numpy = np.zeros_like(data_numpy)
-            for v1, v2 in coco_pairs:
-                bone_data_numpy[:, :, v1 - 1] = data_numpy[:, :, v1 - 1] - data_numpy[:, :, v2 - 1]
-
-        # keep spine center's trajectory !!! modified on July 4th, 2022
-            bone_data_numpy[:, :, center_index] = data_numpy[:, :, center_index]
-            data_numpy = bone_data_numpy
-
-        # for joint modality
-        # separate trajectory from relative coordinate to each frame's spine center
-        else:
-            # # there's a freedom to choose the direction of local coordinate axes!
-            trajectory = data_numpy[:, :, center_index]
-            # let spine of each frame be the joint coordinate center
-            data_numpy = data_numpy - data_numpy[:, :, center_index:center_index+1]
-
-            data_numpy[:, :, center_index] = trajectory
+            bone_data = self._compute_bone_data(data_sample)
+            data_sample = bone_data
 
         if self.vel:
-            data_numpy[:, :-1] = data_numpy[:, 1:] - data_numpy[:, :-1]
+            data_sample[:, :-1] = data_sample[:, 1:] - data_sample[:, :-1]
+            data_sample[:, -1] = 0
 
-            data_numpy[:, -1] = 0
+        joint_data = self._normalize_joint(data_sample)
+        return joint_data, data_sample, label, index
 
-        return joint, data_numpy, label, index
+    def _compute_bone_data(self, data_sample):
+        bone_data = np.zeros_like(data_sample)
+        for v1, v2 in coco_pairs:
+            bone_data[:, :, v1 - 1] = data_sample[:, :, v1 - 1] - data_sample[:, :, v2 - 1]
+
+        center_index = 8
+        bone_data[:, :, center_index] = data_sample[:, :, center_index]
+        return bone_data
+
+    def _normalize_joint(self, data_sample):
+        center_index = 8
+        trajectory = data_sample[:, :, center_index]
+        data_sample -= data_sample[:, :, center_index:center_index + 1]
+        data_sample[:, :, center_index] = trajectory
+        return data_sample
 
     def top_k(self, score, top_k):
         rank = score.argsort()
-        hit_top_k = [l in rank[i, -top_k:] for i, l in enumerate(self.label)]
-        return sum(hit_top_k) * 1.0 / len(hit_top_k)
+        hit_top_k = [label in rank[i, -top_k:] for i, label in enumerate(self.label)]
+        return sum(hit_top_k) / len(hit_top_k)
+
 
 def import_class(name):
     components = name.split('.')
